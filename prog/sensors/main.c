@@ -26,6 +26,7 @@
 #include <errno.h>
 #include <locale.h>
 #include <langinfo.h>
+#include <unistd.h>
 
 #ifndef __UCLIBC__
 #include <iconv.h>
@@ -62,6 +63,8 @@ static void print_long_help(void)
 	     "      --bus-list         Generate bus statements for sensors.conf\n"
 	     "  -u                     Raw output\n"
 	     "  -j                     Json output\n"
+	     "  -l    --loop           Loop mode, display sensors every time\n"
+	     "                         something is sent to STDIN\n"
 	     "  -v, --version          Display the program version\n"
 	     "  -n, --allow-no-sensors Do not fail if no sensors found\n"
 	     "\n"
@@ -271,8 +274,9 @@ static void print_bus_list(void)
 
 int main(int argc, char *argv[])
 {
-	int c, i, err, do_bus_list, allow_no_sensors;
+	int c, i, err, do_bus_list, allow_no_sensors, loop_mode, chip_args;
 	const char *config_file_name = NULL;
+	sensors_chip_name chip_names[MAX_CHIP_NAMES];
 
 	struct option long_opts[] =  {
 		{ "help", no_argument, NULL, 'h' },
@@ -283,6 +287,7 @@ int main(int argc, char *argv[])
 		{ "config-file", required_argument, NULL, 'c' },
 		{ "bus-list", no_argument, NULL, 'B' },
 		{ "allow-no-sensors", no_argument, NULL, 'n' },
+		{ "loop", no_argument, NULL, 'l' },
 		{ 0, 0, 0, 0 }
 	};
 
@@ -294,8 +299,10 @@ int main(int argc, char *argv[])
 	do_bus_list = 0;
 	hide_adapter = 0;
 	allow_no_sensors = 0;
+	loop_mode = 0;
+	chip_args = 0;
 	while (1) {
-		c = getopt_long(argc, argv, "hsvfAc:ujn", long_opts, NULL);
+		c = getopt_long(argc, argv, "hsvfAc:ujnl", long_opts, NULL);
 		if (c == EOF)
 			break;
 		switch(c) {
@@ -333,6 +340,9 @@ int main(int argc, char *argv[])
 		case 'n':
 			allow_no_sensors = 1;
 			break;
+		case 'l':
+			loop_mode = 1;
+			break;
 		default:
 			fprintf(stderr,
 				"Internal error while parsing options!\n");
@@ -349,40 +359,74 @@ int main(int argc, char *argv[])
 
 	if (do_bus_list) {
 		print_bus_list();
-	} else if (optind == argc) { /* No chip name on command line */
-		if (!do_the_real_work(NULL, &err)) {
-			fprintf(stderr,
-				"No sensors found!\n"
-				"Make sure you loaded all the kernel drivers you need.\n"
-				"Try sensors-detect to find out which these are.\n");
-			if (!allow_no_sensors) {
-				err = 1;
-			}
-		}
 	} else {
-		int cnt = 0;
-		sensors_chip_name chip;
+		char buf[1];
+		chip_args = argc - optind;
 
-		for (i = optind; i < argc; i++) {
-			if (sensors_parse_chip_name(argv[i], &chip)) {
+		if (chip_args > MAX_CHIP_NAMES) {
+			fprintf(stderr, "Too many chip names.\n");
+			chip_args = 0;
+			goto exit;
+		}
+
+		for (i = 0; i < chip_args; i++) {
+			if (sensors_parse_chip_name(argv[optind+i], &chip_names[i])) {
 				fprintf(stderr,
 					"Parse error in chip name `%s'\n",
-					argv[i]);
+					argv[optind+i]);
 				print_short_help();
 				err = 1;
+				for (i--; i >= 0; i--)
+					sensors_free_chip_name(chip_names+i);
+				chip_args = 0;
 				goto exit;
 			}
-			cnt += do_the_real_work(&chip, &err);
-			sensors_free_chip_name(&chip);
 		}
 
-		if (!cnt) {
-			fprintf(stderr, "Specified sensor(s) not found!\n");
-			err = 1;
+		while (1) {
+			if (loop_mode)
+				/* Loop mode, wait for next input or EOF */
+				if (read(STDIN_FILENO, buf, sizeof(buf)) <= 0)
+					goto exit;
+
+			if (chip_args == 0) {
+				if (!do_the_real_work(NULL, &err)) {
+					fprintf(stderr,
+						"No sensors found!\n"
+						"Make sure you loaded all the kernel drivers you need.\n"
+						"Try sensors-detect to find out which these are.\n");
+					if (!allow_no_sensors) {
+						err = 1;
+					}
+				}
+			} else {
+				int cnt = 0;
+
+				for (i = 0; i < chip_args; i++)
+					cnt += do_the_real_work(&chip_names[i], &err);
+
+				if (!cnt) {
+					fprintf(stderr, "Specified sensor(s) not found!\n");
+					err = 1;
+				}
+			}
+
+			if (!loop_mode || err)
+				goto exit;
+
+            if (loop_mode)
+                /* Let the caller know that the end of requested sensors output
+                   is reached */
+                printf("<<EOD>>\n");
 		}
 	}
 
 exit:
+	if (chip_args > 0) {
+		for (i = 0; i < chip_args; i++)
+			sensors_free_chip_name(chip_names+i);
+	}
+
 	sensors_cleanup();
 	exit(err);
 }

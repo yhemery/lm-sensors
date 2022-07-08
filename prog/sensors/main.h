@@ -21,6 +21,8 @@
 #ifndef PROG_SENSORS_MAIN_H
 #define PROG_SENSORS_MAIN_H
 
+#define MAX_CHIP_NAMES 32
+
 extern int fahrenheit;
 extern char degstr[5];
 
