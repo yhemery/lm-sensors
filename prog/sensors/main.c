@@ -292,6 +292,7 @@ int main(int argc, char *argv[])
 	};
 
 	setlocale(LC_CTYPE, "");
+	setvbuf(stdout, NULL, _IONBF, 0);
 
 	do_raw = 0;
 	do_json = 0;
